@@ -4,7 +4,7 @@
   "version": "2.0",
   "description": "Disposable email, OTP receiver, real-time inbox, and auto OTP fill for signups and testing.",
   "icons": {
-    "96": "icon96.png"
+    "61": "icon61.png"
   },
   "action": { "default_popup": "index.html" },
   "background": {

@@ -12,7 +12,7 @@ const Header = ({ setTrigger, mailbox, onSelectEmail }) => {
   const [extToken, setExtToken] = useState(null);
 
   useEffect(() => {
-    if (browser?.storage) {
+    if (typeof browser !== 'undefined' && browser.storage) {
       browser.storage.local.get("extToken").then(res => {
         if (res.extToken) setExtToken(res.extToken);
       });

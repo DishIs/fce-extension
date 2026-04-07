@@ -5,6 +5,7 @@ if (typeof browser === "undefined") {
 }
 const fetchMailbox = (address, folder) => {
     return new Promise((resolve, reject) => {
+        if (!browser?.runtime) return reject("Browser runtime not available");
         browser.runtime.sendMessage(
             { type: "FETCH_MAILBOX", address, folder },
             (response) => {
@@ -17,6 +18,7 @@ const fetchMailbox = (address, folder) => {
 
 const fetchMessage = (address, id) => {
     return new Promise((resolve, reject) => {
+        if (!browser?.runtime) return reject("Browser runtime not available");
         browser.runtime.sendMessage(
             { type: "FETCH_MESSAGE", address, id },
             (response) => {
@@ -29,6 +31,7 @@ const fetchMessage = (address, id) => {
 
 const deleteMessage = (address, id) => {
     return new Promise((resolve, reject) => {
+        if (!browser?.runtime) return reject("Browser runtime not available");
         browser.runtime.sendMessage(
             { type: "DELETE_MESSAGE", address, id },
             (response) => {
@@ -41,6 +44,7 @@ const deleteMessage = (address, id) => {
 
 const moveToFolder = (address, id, folder) => {
     return new Promise((resolve, reject) => {
+        if (!browser?.runtime) return reject("Browser runtime not available");
         browser.runtime.sendMessage(
             { type: "FOLDER_CHANGE", address, id, folder },
             (response) => {
@@ -52,6 +56,7 @@ const moveToFolder = (address, id, folder) => {
 };
 
 const initWebSocket = (address) => {
+    if (!browser?.runtime) return;
     browser.runtime.sendMessage({ type: "INIT_SOCKET", address }, (response) => {
         if (!response?.success) {
             return response?.error
@@ -61,6 +66,7 @@ const initWebSocket = (address) => {
 
 const getEmailHistory = () => {
     return new Promise((resolve, reject) => {
+        if (!browser?.runtime) return resolve([]);
         browser.runtime.sendMessage({ type: "EMAIL_HISTORY" }, (response) => {
             if (response?.success) {
                 resolve(response.data)
@@ -72,6 +78,7 @@ const getEmailHistory = () => {
 
 const getSettings = (tab) => {
     return new Promise((resolve, reject) => {
+        if (!browser?.runtime) return resolve({});
         browser.runtime.sendMessage({ type: "FETCH_SETTINGS", tab }, (response) => {
             if (response?.success) {
                 resolve(response.data)
@@ -83,6 +90,7 @@ const getSettings = (tab) => {
 
 const saveSettings = (tab, settings) => {
     return new Promise((resolve, reject) => {
+        if (!browser?.runtime) return resolve();
         browser.runtime.sendMessage({ type: "SAVE_SETTINGS", tab, settings }, (response) => {
             if (response?.success) {
                 resolve(response)
@@ -94,6 +102,7 @@ const saveSettings = (tab, settings) => {
 
 const getEmailCounts = (address) => {
     return new Promise((resolve, reject) => {
+        if (!browser?.runtime) return resolve({});
         browser.runtime.sendMessage({type: "EMAIL_COUNTS", address}, (response) => {
             if (response?.success) resolve(response?.data)
                 else reject(response?.error || 'Unkown error')

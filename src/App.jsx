@@ -46,32 +46,33 @@ function App() {
       })
       .catch(e => console.error("Failed to fetch domains", e))
       .finally(() => {
-        browser?.storage?.local?.get?.("tempEmail", async (res) => {
-          const cachedEmail = res.tempEmail;
-          if (cachedEmail) {
-            setEmail(cachedEmail);
-            setSelectedDomain(cachedEmail.split("@")[1]);
-          } else {
-            // Wait, we need to use domainsList here, but it might not be in closure.
-            // Using functional state or just the default is fine.
-          }
-        });
+        if (typeof browser !== 'undefined' && browser.storage) {
+          browser.storage.local.get("tempEmail").then(res => {
+            const cachedEmail = res.tempEmail;
+            if (cachedEmail) {
+              setEmail(cachedEmail);
+              setSelectedDomain(cachedEmail.split("@")[1]);
+            }
+          });
+        }
       });
   }, []);
 
   // Set initial email if not cached, once domains are loaded
   useEffect(() => {
     if (domainsList.length > 0 && !email) {
-      browser?.storage?.local?.get?.("tempEmail", async (res) => {
-        if (!res.tempEmail) {
-          const rdom = domainsList[Math.floor(Math.random() * domainsList.length)];
-          const newEmail = randomString(10) + "@" + rdom;
-          setEmail(newEmail);
-          setSelectedDomain(rdom);
-          browser.storage.local.set({ tempEmail: newEmail });
-          initWebSocket(newEmail);
-        }
-      });
+      if (typeof browser !== 'undefined' && browser.storage) {
+        browser.storage.local.get("tempEmail").then(res => {
+          if (!res.tempEmail) {
+            const rdom = domainsList[Math.floor(Math.random() * domainsList.length)];
+            const newEmail = randomString(10) + "@" + rdom;
+            setEmail(newEmail);
+            setSelectedDomain(rdom);
+            browser.storage.local.set({ tempEmail: newEmail });
+            initWebSocket(newEmail);
+          }
+        });
+      }
     }
   }, [domainsList, email]);
 
