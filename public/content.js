@@ -6,6 +6,47 @@ if (typeof browser === "undefined") {
     var browser = chrome;
 }
 
+// ── Auth Handshake ────────────────────────────────────────────────────────
+window.addEventListener("message", (event) => {
+    if (event.data && event.data.type === "FCE_EXT_AUTH_SUCCESS") {
+        console.log("Extension received auth token from web app!");
+        browser.runtime.sendMessage({
+            type: "SET_EXT_TOKEN",
+            token: event.data.extToken
+        }).catch(err => console.error("Error saving ext token", err));
+    }
+});
+
+browser.runtime.onMessage.addListener((message) => {
+    if (message.type === "NEW_OTP") {
+        // Attempt to auto-fill any detected OTP inputs
+        if (otpInputs && otpInputs.length > 0) {
+            otpInputs.forEach(inp => {
+                inp.value = message.otp;
+                inp.dispatchEvent(new Event("input", { bubbles: true }));
+            });
+            // Show a tiny notification bubble on the page
+            showAutoFillSuccess(message.otp);
+        }
+    }
+});
+
+function showAutoFillSuccess(otp) {
+    const div = document.createElement('div');
+    div.innerText = `OTP ${otp} auto-filled! (FreeCustom.Email)`;
+    div.style.position = 'fixed';
+    div.style.top = '10px';
+    div.style.right = '10px';
+    div.style.background = '#4CAF50';
+    div.style.color = 'white';
+    div.style.padding = '10px';
+    div.style.borderRadius = '5px';
+    div.style.zIndex = 2147483647;
+    document.body.appendChild(div);
+    setTimeout(() => div.remove(), 3000);
+}
+// ──────────────────────────────────────────────────────────────────────────
+
 let emailInputs = new Set();
 const detectEmailInputs = () => {
 

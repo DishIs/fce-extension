@@ -14,8 +14,9 @@ if (typeof browser === "undefined") {
 }
 function App() {
   const [loading, setLoading] = useState(false);
-  const [email, setEmail] = useState(randomString(10) + "@" + randomDomain());
-  const [selectedDomain, setSelectedDomain] = useState(randomDomain());
+  const [domainsList, setDomainsList] = useState(["junkstopper.info", "areueally.info"]);
+  const [email, setEmail] = useState("");
+  const [selectedDomain, setSelectedDomain] = useState("");
   const [copied, setCopied] = useState(false);
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -34,28 +35,53 @@ function App() {
   }
 
   useEffect(() => {
-    browser?.storage?.local?.get?.("tempEmail", async (res) => {
-      const cachedEmail = res.tempEmail;
-      if (cachedEmail) {
-        setEmail(cachedEmail);
-        setSelectedDomain(cachedEmail.split("@")[1]);
-      } else {
-        const newEmail = randomString(10) + "@" + randomDomain();
-        setEmail(newEmail);
-        setSelectedDomain(newEmail.split("@")[1]);
-        browser.storage.local.set({ tempEmail: newEmail });
-        initWebSocket(newEmail)
-      }
-    });
-
+    // Fetch domains first
+    fetch("https://api2.freecustom.email/domains")
+      .then(r => r.json())
+      .then(d => {
+         if (d.success && d.data && d.data.length > 0) {
+            const doms = d.data.map(x => x.domain);
+            setDomainsList(doms);
+         }
+      })
+      .catch(e => console.error("Failed to fetch domains", e))
+      .finally(() => {
+        browser?.storage?.local?.get?.("tempEmail", async (res) => {
+          const cachedEmail = res.tempEmail;
+          if (cachedEmail) {
+            setEmail(cachedEmail);
+            setSelectedDomain(cachedEmail.split("@")[1]);
+          } else {
+            // Wait, we need to use domainsList here, but it might not be in closure.
+            // Using functional state or just the default is fine.
+          }
+        });
+      });
   }, []);
+
+  // Set initial email if not cached, once domains are loaded
+  useEffect(() => {
+    if (domainsList.length > 0 && !email) {
+      browser?.storage?.local?.get?.("tempEmail", async (res) => {
+        if (!res.tempEmail) {
+          const rdom = domainsList[Math.floor(Math.random() * domainsList.length)];
+          const newEmail = randomString(10) + "@" + rdom;
+          setEmail(newEmail);
+          setSelectedDomain(rdom);
+          browser.storage.local.set({ tempEmail: newEmail });
+          initWebSocket(newEmail);
+        }
+      });
+    }
+  }, [domainsList, email]);
 
 
 
   const handleRandomEmail = () => {
-    const newEmail = randomString(10) + "@" + randomDomain();
+    const rdom = domainsList[Math.floor(Math.random() * domainsList.length)];
+    const newEmail = randomString(10) + "@" + rdom;
     setEmail(newEmail);
-    setSelectedDomain(newEmail.split("@")[1]);
+    setSelectedDomain(rdom);
     browser.storage.local.set({ tempEmail: newEmail });
     initWebSocket(newEmail);
     if (eListRef.current) {
@@ -94,12 +120,12 @@ function App() {
                 browser.storage.local.set({ tempEmail: newEmail });
                 initWebSocket(newEmail);
                 if (eListRef.current) {
-                  eListRef.current.clientRefresh(email)
+                  eListRef.current.clientRefresh(newEmail)
                 }
               }}
               className="border py-1.5 w-full border-bbg rounded-tr-md rounded-br-md border-l-0 bg-bg text-fg"
             >
-              {domains.map((domain) => (
+              {domainsList.map((domain) => (
                 <option key={domain} value={domain}>
                   @{domain}
                 </option>

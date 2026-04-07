@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "QuickTemp - Highly customizable temp mail UI",
+  "name": "FreeCustom.Email – Temp Mail & OTP Inbox",
   "version": "2.0",
-  "description": "An advanced disposalbe email UI for pros",
+  "description": "Disposable email, OTP receiver, real-time inbox, and auto OTP fill for signups and testing.",
   "icons": {
     "61": "icon61.png"
   },

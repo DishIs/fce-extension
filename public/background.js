@@ -1,20 +1,27 @@
 /* global browser */
 importScripts("libs/webextension-polyfill.js");
 
+const API_BASE = "https://api2.freecustom.email";
+const WS_BASE = "wss://api2.freecustom.email";
 
+// Helper to get headers
+async function getAuthHeaders() {
+    const { extToken } = await browser.storage.local.get("extToken");
+    const headers = { "Content-Type": "application/json", "x-fce-client": "extension" };
+    if (extToken) {
+        headers["Authorization"] = `Bearer ${extToken}`;
+    }
+    return headers;
+}
 
+// Storage helpers
 let isStorageLocked = false;
 const updateQueue = [];
 
 async function updateSavedMessages(changeFunction) {
     return new Promise((resolve, reject) => {
         updateQueue.push({ changeFunction, resolve, reject });
-
-        if (isStorageLocked) {
-            console.log("Storage is locked. Queuing update.");
-            return;
-        }
-
+        if (isStorageLocked) return;
         processQueue();
     });
 }
@@ -24,719 +31,119 @@ async function processQueue() {
         isStorageLocked = false;
         return;
     }
-
     isStorageLocked = true;
     const { changeFunction, resolve, reject } = updateQueue.shift();
-
     try {
         const { savedMessages = {} } = await browser.storage.local.get("savedMessages");
         const updatedMessages = changeFunction(savedMessages);
-
         await browser.storage.local.set({ savedMessages: updatedMessages });
-
-        console.log("Update successful. Unlocking storage.");
         resolve({ success: true });
     } catch (error) {
-        console.error("Failed to update storage:", error);
         reject(error);
     } finally {
         processQueue();
     }
 }
 
-const fetchMessageData = async (id, address) => {
-
-    const res = await fetch(
-        `https://${API_HOST}/mailbox/${address}/message/${id}`,
-        {
-            headers: {
-                "x-rapidapi-host": API_HOST,
-                "x-rapidapi-key": API_KEY,
-            },
-            method: 'GET'
-        }
-    );
-
-    if (!res.ok) throw new Error(`API Error: ${res.status}`);
-    const apiResponse = await res.json();
-    const fetchedData = apiResponse.data;
-
-    const changeFn = (currentSavedMessages) => {
-        const currentMailboxData = currentSavedMessages?.[address]?.data || [];
-
-        const updatedMailbox = currentMailboxData.map((msg) =>
-            msg.id === id ? { ...msg, ...fetchedData } : msg
-        );
-
-        const updatedMessages = {
-            ...currentSavedMessages,
-            [address]: {
-                ...currentSavedMessages[address],
-                data: updatedMailbox
-            },
-        };
-        return updatedMessages;
-    };
-
-    await updateSavedMessages(changeFn);
-    return fetchedData
-}
-
-const extractEmail = (from) => {
-    if (from == undefined) {
-        return 'no@example.com'
-    }
-    const match = from.match(/<([^>]+)>/);
-
-    const email = match ? match[1] : null;
-    return email
-}
-
-const API_KEY = '2a6819691fmshb9cf5179a87ac31p145ea2jsn136a1fc2af63'
-const API_HOST = "temp-mail-maildrop1.p.rapidapi.com";
-
-browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === "FETCH_MAILBOX") {
-        (async () => {
-            try {
-
-                if (!message.address) throw new Error("No address provided");
-
-                const res = await fetch(
-                    `https://${API_HOST}/mailbox/${message.address}`,
-                    {
-                        headers: {
-                            "x-rapidapi-host": API_HOST,
-                            "x-rapidapi-key": API_KEY,
-                        },
-                        method: "GET",
-                    }
-                );
-
-                if (!res.ok) {
-                    throw new Error(`API Error: ${res.status}`);
-                }
-
-
-                let settings = await browser.storage.local.get('settings')
-                settings = settings.settings.Blacklist
-                let blacklistSenders = settings.senders
-
-                const data = await res.json();
-                const { savedMessages = {} } = await browser.storage.local.get("savedMessages");
-
-                const existingMailboxData = savedMessages[message.address]?.data || [];
-                const existingIds = new Set(existingMailboxData.map(msg => msg.id));
-                const newMessages = data.data.filter(msg => !existingIds.has(msg.id));
-
-                const combinedData = [...existingMailboxData, ...newMessages];
-
-                const filteredData = combinedData.filter(d => !blacklistSenders.includes(extractEmail(d.from)));
-
-                await browser.storage.local.set({
-                    savedMessages: {
-                        ...savedMessages,
-                        [message.address]: {
-                            data: filteredData.map((e) => ({
-                                ...e,
-                                folder: (e?.folder || []).length !== 0 ? e?.folder : ['Inbox', 'Unread']
-                            })),
-                            timestamp: Date.now()
-                        }
-                    }
-                });
-
-                const reqData = filteredData.filter((m) => (m?.folder || []).includes(message.folder))
-
-                if (filteredData.length) {
-                    let { emailCounts = {} } = await browser.storage.local.get("emailCounts");
-
-                    const existingCounts = emailCounts[message.address] || {};
-
-                    const updatedCounts = Object.fromEntries(
-                        Object.keys(existingCounts).map((k) => [
-                            k,
-                            filteredData.filter((e) => (e?.folder || []).includes(k)).length,
-                        ])
-                    );
-
-                    await browser.storage.local.set({
-                        emailCounts: {
-                            ...emailCounts,
-                            [message.address]: updatedCounts,
-                        },
-                    });
-                }
-
-
-                sendResponse({ success: true, data: reqData });
-            } catch (error) {
-                console.error("Background fetch error:", error);
-                sendResponse({ success: false, error: error.message });
-            }
-        })();
-
-        return true;
-    }
-
-    if (message.type === "FETCH_MESSAGE") {
-        (async () => {
-            try {
-                if (!message.address || !message.id) throw new Error("Missing params");
-
-                const { savedMessages = {} } = await browser.storage.local.get("savedMessages");
-                const mailboxData = savedMessages?.[message.address]?.data || [];
-                const cached = mailboxData.find((msg) => msg.id === message.id);
-
-                if (cached?.html || cached?.text) {
-                    sendResponse({ success: true, data: cached });
-                    return;
-                }
-                const fetchedData = await fetchMessageData(message.id, message.address)
-
-                sendResponse({ success: true, data: fetchedData });
-
-            } catch (err) {
-                console.error("FETCH_MESSAGE error:", err);
-                sendResponse({ success: false, error: err.message });
-            }
-        })();
-        return true;
-    }
-
-    if (message.type === "DELETE_MESSAGE") {
-        (async () => {
-            try {
-                if (!message.address || !message.id) throw new Error("Missing params");
-
-                const result = await browser.storage.local.get("savedMessages");
-                const savedMessages = result.savedMessages || {};
-                const mailboxData = savedMessages[message.address]?.data || [];
-
-                const res = await fetch(
-                    `https://${API_HOST}/mailbox/${message.address}/message/${message.id}`,
-                    {
-                        headers: {
-                            "x-rapidapi-host": API_HOST,
-                            "x-rapidapi-key": API_KEY,
-                        },
-                        method: "DELETE",
-                    }
-                );
-
-                if (!res.ok) throw new Error(`API Error: ${res.status}`);
-
-                const updatedMailbox = mailboxData.filter((msg) => msg.id !== message.id);
-                const folders = mailboxData.find(m => m.id === message.id).folder
-
-                await browser.storage.local.set({
-                    savedMessages: {
-                        ...savedMessages,
-                        [message.address]: {
-                            data: updatedMailbox,
-                            timestamp: Date.now(),
-                        },
-                    },
-                });
-
-                let emailCounts = await browser.storage.local.get('emailCounts')
-                emailCounts = emailCounts.emailCounts || {}
-                emailCounts = emailCounts[message.address]
-                folders.map(f => {
-                    emailCounts[f] = (emailCounts[f] || 1) - 1
-                })
-
-                await browser.storage.local.set({ emailCounts })
-
-                sendResponse({ success: true });
-            } catch (err) {
-                console.error("DELETE_MESSAGE error:", err);
-                sendResponse({ success: false, error: err.message });
-            }
-        })();
-
-        return true;
-    }
-
-    if (message.type === "INIT_SOCKET") {
-        (async () => {
-            try {
-                await initWebSocket();
-
-                let emailHistory = [];
-                if (message.address) {
-                    const result = await browser.storage.local.get("emailHistory");
-                    emailHistory = result.emailHistory || [];
-                    emailHistory = emailHistory.filter((e) => e !== message.address);
-                    emailHistory.unshift(message.address);
-                    emailHistory.slice(0, 10)
-                    await browser.storage.local.set({ emailHistory });
-                }
-
-                sendResponse({ success: true });
-            } catch (err) {
-                console.error("INIT_SOCKET error:", err);
-                sendResponse({ success: false, error: err.message });
-            }
-        })();
-
-        return true;
-    }
-    if (message.type === "EMAIL_HISTORY") {
-        (async () => {
-            try {
-
-                let emailHistory = [];
-                const result = await browser.storage.local.get("emailHistory");
-                emailHistory = result.emailHistory || [];
-
-                sendResponse({ success: true, data: emailHistory });
-            } catch (err) {
-                console.error("EMAIL_HISTORY error:", err);
-                sendResponse({ success: false, error: err.message });
-            }
-        })();
-
-        return true;
-    }
-
-    if (message.type === 'EMAIL_COUNTS') {
-        (async () => {
-            try {
-                let counts = {
-                    Inbox: 0,
-                    Unread: 0,
-                    Starred: 0,
-                    Spam: 0,
-                    Trash: 0
-                }
-                const result = await browser.storage.local.get('emailCounts')
-                let emailCounts = result.emailCounts || {};
-                emailCounts = emailCounts[message.address] || counts
-
-                if (Object.keys(result).length !== 0) {
-                    counts = emailCounts
-                }
-
-                sendResponse({ success: true, data: counts })
-            } catch (e) {
-                console.error('EMAIL_COUNTS error: ', e)
-                sendResponse({ success: false, error: e.message })
-            }
-        })();
-
-        return true
-    }
-
-    if (message.type === "FETCH_SETTINGS") {
-        (async () => {
-            try {
-
-                let settings = {};
-                const result = await browser.storage.local.get("settings");
-                settings = result.settings || {};
-                settings = {
-                    [message.tab]: settings[message.tab]
-                }
-
-                sendResponse({ success: true, data: settings });
-            } catch (err) {
-                console.error("FETCH_SETTINGS error:", err);
-                sendResponse({ success: false, error: err.message });
-            }
-        })();
-
-        return true;
-    }
-
-    if (message.type === "SAVE_SETTINGS") {
-        (async () => {
-            try {
-
-                let settings = {};
-                const result = await browser.storage.local.get("settings");
-                settings = result.settings || {};
-                await browser.storage.local.set({
-                    settings: {
-                        ...settings,
-                        [message.tab]: message.settings
-                    }
-                })
-
-                sendResponse({ success: true });
-            } catch (err) {
-                console.error("SAVE_SETTINGS error:", err);
-                sendResponse({ success: false, error: err.message });
-            }
-        })();
-
-        return true;
-    }
-
-    if (message.type === "FOLDER_CHANGE") {
-        (async () => {
-            try {
-                const { savedMessages: initialSavedMessages = {} } = await browser.storage.local.get("savedMessages");
-                const initialMailboxData = initialSavedMessages?.[message.address]?.data || [];
-                const originalEmail = initialMailboxData.find((msg) => msg.id === message.id);
-
-                if (!originalEmail) {
-                    throw new Error(`Email with id ${message.id} not found.`);
-                }
-                const originalFolders = originalEmail.folder;
-                const messagesChangeFn = (currentSavedMessages) => {
-                    const mailboxData = currentSavedMessages?.[message.address]?.data || [];
-                    const cachedIndex = mailboxData.findIndex((msg) => msg.id === message.id);
-
-                    if (cachedIndex === -1) return currentSavedMessages;
-
-                    const cached = mailboxData[cachedIndex];
-                    let folders = [...cached.folder];
-                    const moveTo = message.folder;
-
-                    const inInbox = folders.includes("Inbox");
-                    const inSpam = folders.includes("Spam");
-                    const inTrash = folders.includes("Trash");
-                    const toSoT = moveTo === "Spam" || moveTo === "Trash";
-                    const inSoT = inSpam || inTrash;
-
-                    if (inInbox && toSoT) {
-                        folders = folders.filter((f) => f !== "Inbox");
-                        folders.unshift(moveTo);
-                    } else if (inSoT && moveTo === "Inbox") {
-                        folders = folders.filter((f) => f !== "Spam" && f !== "Trash");
-                        folders.unshift("Inbox");
-                    } else if (moveTo === "Read") {
-                        folders = folders.filter((f) => f !== "Unread");
-                        folders.push("Read");
-                    } else if (moveTo === "Unstarred") {
-                        folders = folders.filter((f) => f !== "Starred");
-                    } else if (moveTo === "Starred") {
-                        folders.push(moveTo);
-                    } else {
-                        if (!folders.includes(moveTo)) folders.push(moveTo);
-                    }
-
-                    const updatedCached = { ...cached, folder: [...new Set(folders)] };
-                    const newMailboxData = [...mailboxData];
-                    newMailboxData[cachedIndex] = updatedCached;
-
-                    return {
-                        ...currentSavedMessages,
-                        [message.address]: {
-                            ...currentSavedMessages[message.address],
-                            data: newMailboxData,
-                        },
-                    };
-                };
-
-                await updateSavedMessages(messagesChangeFn);
-
-                const { emailCounts = {} } = await browser.storage.local.get("emailCounts");
-                let emailCountsP = emailCounts[message.address] || {};
-                const moveTo = message.folder;
-
-                const incCounts = (f) => { emailCountsP[f] = (emailCountsP[f] || 0) + 1; };
-                const decCounts = (f) => { emailCountsP[f] = Math.max((emailCountsP[f] || 0) - 1, 0); };
-
-                const wasInInbox = originalFolders.includes("Inbox");
-                const wasInSpam = originalFolders.includes("Spam");
-                const wasInTrash = originalFolders.includes("Trash");
-                const wasUnread = originalFolders.includes("Unread");
-                const wasStarred = originalFolders.includes("Starred");
-
-                if (wasInInbox && (moveTo === "Spam" || moveTo === "Trash")) {
-                    decCounts("Inbox");
-                }
-                if ((wasInSpam || wasInTrash) && moveTo === "Inbox") {
-                    if (wasInSpam) decCounts("Spam");
-                    if (wasInTrash) decCounts("Trash");
-                }
-                if (moveTo === "Spam") incCounts("Spam");
-                if (moveTo === "Trash") incCounts("Trash");
-                if (moveTo === "Inbox") incCounts("Inbox");
-
-                if (wasUnread && moveTo === "Read") {
-                    decCounts("Unread");
-                }
-                if (wasStarred && moveTo === "Unstarred") {
-                    decCounts("Starred");
-                }
-                if (!wasStarred && moveTo === "Starred") {
-                    incCounts("Starred");
-                }
-
-                await browser.storage.local.set({
-                    emailCounts: {
-                        ...emailCounts,
-                        [message.address]: emailCountsP,
-                    },
-                });
-
-                sendResponse({ success: true });
-
-            } catch (err) {
-                console.error("FOLDER_CHANGE error: ", err);
-                sendResponse({ success: false, error: err.message });
-            }
-        })();
-
-        return true;
-    }
-
-    if (message.action === 'getEmailSuggestions') {
-        (async () => {
-            const { settings = {} } = await browser.storage.local.get('settings')
-            const { tempEmail = '' } = await browser.storage.local.get('tempEmail')
-            if (settings.Additional.suggestions) {
-                sendResponse({ suggestions: [tempEmail] })
-            }
-        })();
-        return true
-    }
-
-    if (message.action === "getOtpSuggestion") {
-        (async () => {
-            const { settings = {} } = await browser.storage.local.get("settings");
-            const { otp = "" } = await browser.storage.local.get("otp");
-            if (settings.Additional?.codeExtraction && otp) {
-                sendResponse({ otp });
-            } else {
-                sendResponse({});
-            }
-        })();
-        return true;
-    }
-
-
-    if (message.action === `genRandomEmail`) {
-        (async () => {
-            const domains = ["areueally.info", "junkstopper.info"];
-
-            const rndDomain = domains[Math.floor(Math.random() * domains.length)];
-            const tempEmail = randomString(10) + '@' + rndDomain
-            await browser.storage.local.set({ tempEmail })
-            initWebSocket()
-            sendResponse({ tempEmail })
-        })();
-        return true
-    }
-
-});
-
-const randomString = (length) => {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    let result = '';
-    for (let i = 0; i < length; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
-}
-
-async function showNotification(email) {
-    const title = "📧 New Email Received!";
-    const message = `From: ${email.from}\nSubject: ${email.subject}`;
-
-    if (browser?.notifications) {
-        browser.notifications.create({
-            type: "basic",
-            iconUrl: "icon61.png",
-            title,
-            message,
-            priority: 2,
-        });
-    }
-}
-
-let socket;
+// Websocket Management
+let socket = null;
+let reconnectTimer = null;
 
 async function initWebSocket() {
-    const result = await browser.storage.local.get("tempEmail");
+    if (socket) socket.close();
 
-    const email = result.tempEmail;
-    if (!email) return;
+    const { extToken, tempEmail } = await browser.storage.local.get(["extToken", "tempEmail"]);
+    if (!tempEmail) return;
 
-    socket = new WebSocket(`wss://fh.ws.junkstopper.info?mailbox=${email}`);
+    let wsUrl = `${WS_BASE}/?mailbox=${encodeURIComponent(tempEmail)}`;
+    if (extToken) {
+        wsUrl = `${WS_BASE}/v1/ws?api_key=${encodeURIComponent(extToken)}`;
+    }
 
+    socket = new WebSocket(wsUrl);
 
-    socket.onopen = () => console.log("WebSocket connected");
+    socket.onopen = () => {
+        console.log("WebSocket connected to", wsUrl);
+    };
+
     socket.onmessage = async (event) => {
-        let data = JSON.parse(event.data);
-
-        let { settings = {} } = await browser.storage.local.get('settings');
-        let blacklistSenders = settings.Blacklist.senders || [];
-        if (blacklistSenders.includes(extractEmail(data?.from))) {
-            return;
-        }
-
-        const result = await browser.storage.local.get("savedMessages");
-        const savedMessages = result.savedMessages || {};
-
-        const fetchedData = await fetchMessageData(data.id, data.mailbox);
-        const isSpam = await spamFilter(fetchedData.html, fetchedData.from, fetchedData.text, fetchedData.subject);
-
-        let counts = await browser.storage.local.get('emailCounts');
-        counts = counts.emailCounts || { [data.mailbox]: {} };
-        let countsP = counts[data.mailbox] || {
-            Inbox: 0,
-            Unread: 0,
-            Starred: 0,
-            Spam: 0,
-            Trash: 0,
-            Read: 0,
-            Unstarred: 0
-        };
-
-        // normalize folder
-        data = { ...data, folder: isSpam ? ['Spam', 'Unread'] : ['Inbox', 'Unread'] };
-
-        const existingIds = new Set(savedMessages[data.mailbox]?.data?.map(msg => msg.id) || []);
-
-        if (!existingIds.has(data.id)) {
-            countsP.Unread = (countsP.Unread || 0) + 1;
-            if (isSpam) {
-                countsP.Spam = (countsP.Spam || 0) + 1;
-            } else {
-                countsP.Inbox = (countsP.Inbox || 0) + 1;
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type === "new_mail") {
+                await handleNewMail(data);
             }
-
-            if (savedMessages[data.mailbox]?.data) {
-                savedMessages[data.mailbox].data.push(data);
-            } else {
-                savedMessages[data.mailbox] = { data: [data], timestamp: Date.now() };
-            }
-
-            await browser.storage.local.set({
-                emailCounts: { ...counts, [data.mailbox]: countsP },
-                savedMessages
-            });
-
-            await showNotification(data);
-            browser.runtime.sendMessage({ type: "NEW_MESSAGE", data });
-
-            if (settings?.Additional?.codeExtraction) {
-                const otp = extractVCode(fetchedData.text);
-                if (otp) {
-                    await browser.storage.local.set({ otp });
-                }
-            }
+        } catch (e) {
+            console.error("WS message error", e);
         }
     };
 
     socket.onclose = () => {
-        console.log("Socket closed. Reconnecting in 5s...");
-        setTimeout(initWebSocket, 5000); // auto-reconnect
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(initWebSocket, 5000);
     };
-
+    
     socket.onerror = (err) => {
         console.error("WebSocket error:", err);
-        socket.close();
     };
 }
 
-// open socket when extension loads up
-initWebSocket();
-
-const spamFilter = async (html, from, text, subject) => {
-    let settings = await browser.storage.local.get("settings");
-    settings = settings.settings || {};
-    const jRules = JSON.parse(settings.Spam?.jRules || "");
-
-    if (!jRules) return false;
-    const result = applySpamRules({ html, from, text, subject }, jRules);
-    return result
-};
-
-function applySpamRules(ctx, rules) {
-    for (const rule of rules) {
-        if (ctx[rule.field]?.includes(rule.includes)) {
-            return rule.return;
-        }
-    }
-    return false;
-}
-
-async function initExtension() {
-    let counts = {
-        Inbox: 0,
-        Unread: 0,
-        Starred: 0,
-        Spam: 0,
-        Trash: 0,
-        Read: 0,
-        Unstarred: 0
-    }
-    let res = await browser.storage.local.get('emailCounts')
-    const resE = await browser.storage.local.get("tempEmail");
-    const email = resE.tempEmail;
-    let result = res?.emailCounts || { [email]: undefined }
-    result = result[email] || undefined
-    if (result === undefined || Object.keys(result).length == 0) {
-        await browser.storage.local.set({
-            emailCounts: {
-                ...res?.emailCounts || {},
-                [email]: counts
+// Process new incoming mail
+async function handleNewMail(data) {
+    const headers = await getAuthHeaders();
+    try {
+        const res = await fetch(`${API_BASE}/mailbox/${data.mailbox}/message/${data.id}`, { headers });
+        if (!res.ok) return;
+        
+        const result = await res.json();
+        const fullMsg = result.data || result;
+        
+        // Save to storage
+        const changeFn = (currentSavedMessages) => {
+            const currentMailboxData = currentSavedMessages?.[data.mailbox]?.data || [];
+            if (!currentMailboxData.some(m => m.id === fullMsg.id)) {
+                // Determine folder based on spam rules
+                // For simplicity, we just put it in Inbox/Unread
+                const newMsg = { ...fullMsg, folder: ["Inbox", "Unread"] };
+                return {
+                    ...currentSavedMessages,
+                    [data.mailbox]: {
+                        ...currentSavedMessages[data.mailbox],
+                        data: [...currentMailboxData, newMsg]
+                    }
+                };
             }
-        })
-    }
+            return currentSavedMessages;
+        };
+        await updateSavedMessages(changeFn);
+        
+        browser.notifications.create({
+            type: "basic",
+            iconUrl: "icon61.png",
+            title: `New Email from ${fullMsg.from}`,
+            message: fullMsg.subject || "No Subject",
+            priority: 2,
+        });
 
-    let s = {
-        Layout: {
-            theme: {
-                light: {
-                    bg: '#ffffff',
-                    fg: '#000000',
-                    btnbg: '#3b82f6',
-                    bbg: '#d1d5db',
-                    logo: '#3b82f6'
-                },
-                dark: {
-                    bg: '#000000',
-                    fg: '#ffffff',
-                    btnbg: '#3b82f6',
-                    bbg: '#374151',
-                    logo: '#3b82f6'
-                },
-                active: 'system'
-            },
-            customTheme: {
-                '3b12f1df-5232-4804-897e-917bf397618a': {
-                    bg: '#000000',
-                    fg: '#ffffff',
-                    btnbg: '#3b82f6',
-                    bbg: '#374151',
-                    logo: '#3b82f6'
+        // Extract OTP
+        const { settings } = await browser.storage.local.get("settings");
+        if (settings?.Additional?.codeExtraction !== false && fullMsg.text) {
+            const otp = extractOTP(fullMsg.text);
+            if (otp) {
+                await browser.storage.local.set({ latestOtp: otp });
+                const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+                for (const tab of tabs) {
+                    browser.tabs.sendMessage(tab.id, { type: "NEW_OTP", otp }).catch(() => {});
                 }
             }
-        },
-        Spam: {
-            jRules: `[
-      { "field": "text", "includes": "free", "return": true },
-      { "field": "from", "includes": "scammer", "return": true }
-]`
-        },
-        Blacklist: {
-            senders: []
-        },
-        Additional: {
-            suggestions: true,
-            codeExtraction: true,
-            searchMode: 'auto'
-        },
-        noOfYeah: 0
-    }
-
-    let settings = await browser.storage.local.get('settings')
-    settings = settings.settings || {}
-    if (settings === undefined || Object.keys(settings).length == 0) {
-        await browser.storage.local.set({ settings: s })
+        }
+        
+        browser.runtime.sendMessage({ type: "NEW_MESSAGE", data: fullMsg }).catch(() => {});
+    } catch (e) {
+        console.error("Error handling new mail", e);
     }
 }
 
-initExtension()
-
-// a crazy func to extract otps from email's text
-function extractVCode(text, opts = {}) {
+function extractOTP(text, opts = {}) {
     opts = {
         minDigits: 4,
         maxDigits: 8,
@@ -748,13 +155,12 @@ function extractVCode(text, opts = {}) {
         ...opts
     };
 
-    if (!text || typeof text !== 'string') return false;
+    if (!text || typeof text !== 'string') return null;
 
     const lower = text.toLowerCase();
 
-    // check if text even looks like a verification mail
     if (!opts.keywords.some(k => lower.includes(k))) {
-        return false;
+        return null;
     }
 
     const candidates = new Map();
@@ -771,30 +177,25 @@ function extractVCode(text, opts = {}) {
         entry.reasons.push(reason);
     };
 
-    // numeric OTPs
     const numRegex = new RegExp(`\\b\\d{${opts.minDigits},${opts.maxDigits}}\\b`, 'g');
     let m;
     while ((m = numRegex.exec(text))) {
         pushCandidate(m[0], 50, 'numeric candidate');
     }
 
-    // alphanumeric tokens
     const alphaNumRegex = /\b[A-Za-z0-9]{6,12}\b/g;
     while ((m = alphaNumRegex.exec(text))) {
         pushCandidate(m[0], 30, 'alphanumeric candidate');
     }
 
-    // add context scoring
     for (const entry of candidates.values()) {
         const ltok = entry.token.toLowerCase();
 
-        // ignore stop words
         if (opts.stopWords.includes(ltok)) {
             entry.score = 0;
             continue;
         }
 
-        // boost if token appears near keyword
         for (const kw of opts.keywords) {
             const idx = lower.indexOf(kw);
             if (idx !== -1) {
@@ -803,20 +204,299 @@ function extractVCode(text, opts = {}) {
             }
         }
 
-        // common 6-digit otp boost
         if (/^\d{6}$/.test(entry.token)) entry.score += 20;
     }
 
-    // filter out zero or negative scores
     const list = Array.from(candidates.values())
         .filter(e => e.score > 0)
         .sort((a, b) => b.score - a.score);
 
-    // if best candidate is just a word or nothing, return false
     const best = list[0];
-    if (!best) return false;
-    if (!/\d/.test(best.token)) return false;
-    if (best.score < 50) return false;        // less confidence like u :)
+    if (!best) return null;
+    if (!/\d/.test(best.token)) return null;
+    if (best.score < 50) return null;
 
     return best.token;
 }
+
+// Message Listeners
+browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    
+    if (message.type === "FETCH_MAILBOX") {
+        (async () => {
+            try {
+                if (!message.address) throw new Error("No address provided");
+                const headers = await getAuthHeaders();
+                const res = await fetch(`${API_BASE}/mailbox/${message.address}`, { headers, method: "GET" });
+                
+                if (!res.ok) throw new Error(`API Error: ${res.status}`);
+                
+                const responseData = await res.json();
+                const apiMessages = responseData.data || [];
+                
+                const { savedMessages = {} } = await browser.storage.local.get("savedMessages");
+                const existingMailboxData = savedMessages[message.address]?.data || [];
+                const existingIds = new Set(existingMailboxData.map(msg => msg.id));
+                
+                const newMessages = apiMessages.filter(msg => !existingIds.has(msg.id)).map(e => ({
+                    ...e,
+                    folder: ["Inbox", "Unread"]
+                }));
+                
+                const combinedData = [...existingMailboxData, ...newMessages];
+                
+                await browser.storage.local.set({
+                    savedMessages: {
+                        ...savedMessages,
+                        [message.address]: {
+                            data: combinedData,
+                            timestamp: Date.now()
+                        }
+                    }
+                });
+
+                const reqData = combinedData.filter((m) => (m?.folder || []).includes(message.folder));
+                sendResponse({ success: true, data: reqData });
+            } catch (error) {
+                sendResponse({ success: false, error: error.message });
+            }
+        })();
+        return true;
+    }
+
+    if (message.type === "FETCH_MESSAGE") {
+        (async () => {
+            try {
+                if (!message.address || !message.id) throw new Error("Missing params");
+                
+                const { savedMessages = {} } = await browser.storage.local.get("savedMessages");
+                const mailboxData = savedMessages?.[message.address]?.data || [];
+                const cached = mailboxData.find((msg) => msg.id === message.id);
+                
+                if (cached?.html || cached?.text) {
+                    sendResponse({ success: true, data: cached });
+                    return;
+                }
+                
+                const headers = await getAuthHeaders();
+                const res = await fetch(`${API_BASE}/mailbox/${message.address}/message/${message.id}`, { headers, method: 'GET' });
+                if (!res.ok) throw new Error(`API Error: ${res.status}`);
+                
+                const apiResponse = await res.json();
+                const fetchedData = apiResponse.data || apiResponse;
+                
+                const changeFn = (currentSavedMessages) => {
+                    const currentMailboxData = currentSavedMessages?.[message.address]?.data || [];
+                    const updatedMailbox = currentMailboxData.map((msg) =>
+                        msg.id === message.id ? { ...msg, ...fetchedData } : msg
+                    );
+                    return {
+                        ...currentSavedMessages,
+                        [message.address]: {
+                            ...currentSavedMessages[message.address],
+                            data: updatedMailbox
+                        }
+                    };
+                };
+                await updateSavedMessages(changeFn);
+                
+                sendResponse({ success: true, data: fetchedData });
+            } catch (err) {
+                sendResponse({ success: false, error: err.message });
+            }
+        })();
+        return true;
+    }
+
+    if (message.type === "DELETE_MESSAGE") {
+        (async () => {
+            try {
+                if (!message.address || !message.id) throw new Error("Missing params");
+                const headers = await getAuthHeaders();
+                const res = await fetch(`${API_BASE}/mailbox/${message.address}/message/${message.id}`, { headers, method: "DELETE" });
+                if (!res.ok) throw new Error(`API Error: ${res.status}`);
+                
+                const { savedMessages = {} } = await browser.storage.local.get("savedMessages");
+                const mailboxData = savedMessages[message.address]?.data || [];
+                const updatedMailbox = mailboxData.filter((msg) => msg.id !== message.id);
+                
+                await browser.storage.local.set({
+                    savedMessages: {
+                        ...savedMessages,
+                        [message.address]: {
+                            data: updatedMailbox,
+                            timestamp: Date.now(),
+                        },
+                    },
+                });
+                
+                sendResponse({ success: true });
+            } catch (err) {
+                sendResponse({ success: false, error: err.message });
+            }
+        })();
+        return true;
+    }
+
+    if (message.type === "FOLDER_CHANGE") {
+        (async () => {
+            try {
+                const changeFn = (currentSavedMessages) => {
+                    const mailboxData = currentSavedMessages?.[message.address]?.data || [];
+                    const cachedIndex = mailboxData.findIndex((msg) => msg.id === message.id);
+                    if (cachedIndex === -1) return currentSavedMessages;
+                    
+                    const cached = mailboxData[cachedIndex];
+                    let folders = [...cached.folder];
+                    const moveTo = message.folder;
+                    
+                    // Simple folder logic
+                    if (moveTo === "Read") folders = folders.filter(f => f !== "Unread");
+                    else if (moveTo === "Unstarred") folders = folders.filter(f => f !== "Starred");
+                    else if (moveTo === "Starred") folders.push("Starred");
+                    else {
+                        folders = folders.filter(f => f !== "Inbox" && f !== "Spam" && f !== "Trash");
+                        folders.push(moveTo);
+                    }
+                    
+                    const newMailboxData = [...mailboxData];
+                    newMailboxData[cachedIndex] = { ...cached, folder: [...new Set(folders)] };
+                    
+                    return {
+                        ...currentSavedMessages,
+                        [message.address]: {
+                            ...currentSavedMessages[message.address],
+                            data: newMailboxData,
+                        },
+                    };
+                };
+                await updateSavedMessages(changeFn);
+                sendResponse({ success: true });
+            } catch (err) {
+                sendResponse({ success: false, error: err.message });
+            }
+        })();
+        return true;
+    }
+
+    if (message.type === "SET_EXT_TOKEN") {
+        browser.storage.local.set({ extToken: message.token }).then(() => {
+            initWebSocket();
+            sendResponse({ success: true });
+        });
+        return true;
+    }
+
+    if (message.type === "UPDATE_ACTIVE_MAILBOX") {
+        browser.storage.local.set({ tempEmail: message.email }).then(() => {
+            initWebSocket();
+            sendResponse({ success: true });
+        });
+        return true;
+    }
+    
+    if (message.type === "GET_LATEST_OTP") {
+        browser.storage.local.get("latestOtp").then(res => {
+            sendResponse({ otp: res.latestOtp });
+        });
+        return true;
+    }
+    
+    if (message.type === "INIT_SOCKET") {
+        initWebSocket();
+        sendResponse({ success: true });
+        return true;
+    }
+    
+    // Polyfill for settings, email history, etc
+    if (message.action === "getEmailSuggestions") {
+        browser.storage.local.get(["settings", "tempEmail"]).then(res => {
+            const settings = res.settings || {};
+            if (settings.Additional?.suggestions !== false) {
+                sendResponse({ suggestions: [res.tempEmail] });
+            } else {
+                sendResponse({ suggestions: [] });
+            }
+        });
+        return true;
+    }
+
+    if (message.action === "getOtpSuggestion") {
+        browser.storage.local.get(["settings", "latestOtp"]).then(res => {
+            const settings = res.settings || {};
+            if (settings.Additional?.codeExtraction !== false && res.latestOtp) {
+                sendResponse({ otp: res.latestOtp });
+            } else {
+                sendResponse({});
+            }
+        });
+        return true;
+    }
+
+    if (message.action === "genRandomEmail") {
+        (async () => {
+            const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+            let result = '';
+            for (let i = 0; i < 10; i++) result += chars.charAt(Math.floor(Math.random() * chars.length));
+            
+            // Fetch domains from backend
+            let domainsList = ["junkstopper.info", "areueally.info"]; // fallback
+            try {
+                const res = await fetch(`${API_BASE}/domains`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.data && data.data.length > 0) {
+                        domainsList = data.data.map(d => d.domain);
+                    }
+                }
+            } catch(e) {}
+            
+            const rndDomain = domainsList[Math.floor(Math.random() * domainsList.length)];
+            const tempEmail = result + '@' + rndDomain;
+            await browser.storage.local.set({ tempEmail });
+            initWebSocket();
+            sendResponse({ tempEmail });
+        })();
+        return true;
+    }
+
+    if (message.type === "EMAIL_COUNTS") {
+        browser.storage.local.get("emailCounts").then(res => {
+            const counts = res.emailCounts || {};
+            const addressCounts = counts[message.address] || { Inbox: 0, Unread: 0, Starred: 0, Spam: 0, Trash: 0 };
+            sendResponse({ success: true, data: addressCounts });
+        });
+        return true;
+    }
+    
+    if (message.type === "EMAIL_HISTORY") {
+        browser.storage.local.get("emailHistory").then(res => {
+            sendResponse({ success: true, data: res.emailHistory || [] });
+        });
+        return true;
+    }
+    
+    if (message.type === "FETCH_SETTINGS") {
+        browser.storage.local.get("settings").then(res => {
+            const settings = res.settings || {};
+            sendResponse({ success: true, data: { [message.tab]: settings[message.tab] } });
+        });
+        return true;
+    }
+    
+    if (message.type === "SAVE_SETTINGS") {
+        browser.storage.local.get("settings").then(res => {
+            const settings = res.settings || {};
+            browser.storage.local.set({ settings: { ...settings, [message.tab]: message.settings } }).then(() => {
+                sendResponse({ success: true });
+            });
+        });
+        return true;
+    }
+});
+
+browser.storage.local.get(["tempEmail", "extToken"]).then((res) => {
+    if (res.tempEmail) {
+        initWebSocket();
+    }
+});
