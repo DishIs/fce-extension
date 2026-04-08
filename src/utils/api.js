@@ -126,11 +126,22 @@ const randomDomain = () => {
 };
 
 
+const updateActiveMailbox = (email) => {
+    return new Promise((resolve, reject) => {
+        if (!browser?.runtime) return resolve();
+        browser.runtime.sendMessage({ type: "UPDATE_ACTIVE_MAILBOX", email }, (response) => {
+            if (response?.success) resolve(response);
+            else reject(response?.error || 'Unknown error');
+        });
+    });
+}
+
 export {
     fetchMailbox, randomString,
     randomDomain, domains,
     fetchMessage, deleteMessage, 
     initWebSocket, getEmailHistory,
     moveToFolder, getSettings,
-    saveSettings, getEmailCounts
+    saveSettings, getEmailCounts,
+    updateActiveMailbox
 };

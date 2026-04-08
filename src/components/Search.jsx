@@ -63,11 +63,13 @@ function Search({ onSelectEmail, mailbox }) {
 
 
     useEffect(() => {
-        browser.storage.local.get('settings', (res) => {
-            let settings = res.settings
-            setSearchMode(settings.Additional.searchMode || 'auto')
-            console.log(settings.Additional.searchMode)
-        })
+        if (typeof browser !== 'undefined' && browser.storage) {
+            browser.storage.local.get('settings', (res) => {
+                let settings = res?.settings || {}
+                let additional = settings.Additional || {}
+                setSearchMode(additional.searchMode || 'auto')
+            })
+        }
     }, [open])
 
     const handleModeToggle = () => {

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Moon, Pen, Plus, Settings, Sun, SunMoon, Trash, X } from 'lucide-react'
+import { Moon, Pen, Plus, Settings, Sun, SunMoon, Trash, X, UserRound, Zap, ArrowRight } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { getSettings, saveSettings } from '../utils/api'
 import { useToast } from '../contexts/ToastContext'
@@ -12,7 +12,7 @@ if (typeof browser === "undefined") {
     /* global chrome */
     var browser = chrome;
 }
-function Setting({ setTrigger }) {
+function Setting({ setTrigger, userPlan = 'anonymous' }) {
     const [open, setOpen] = useState(false)
     const [selectedNav, setSelectedNav] = useState('Layout')
     const [settings, setSettings] = useState({})
@@ -130,18 +130,17 @@ function Setting({ setTrigger }) {
 
     const handleSelectTheme = async (name) => {
         let Layout = {
-            ...settings.Layout,
+            ...(settings.Layout || {}),
             theme: {
-                ...settings.Layout.theme,
+                ...(settings.Layout?.theme || {}),
                 active: name
             }
         }
 
-        if (name === settings.Layout.theme.active) {
+        if (name === settings.Layout?.theme?.active) {
             setSaved(true)
             setCurrChanges({})
         } else {
-
             setCurrChanges((prev) => ({
                 ...prev,
                 Layout
@@ -310,10 +309,12 @@ function Setting({ setTrigger }) {
 
     const navTabs = [
         'Layout',
-        'Spam',
+        userPlan === 'pro' ? 'Spam' : null,
         'Blacklist',
-        'Additional'
-    ]
+        'Additional',
+        'Profile',
+        'API'
+    ].filter(Boolean);
 
     return (
         <div>
@@ -336,11 +337,11 @@ function Setting({ setTrigger }) {
                                 <X size={16} />
                             </button>
                         </div>
-                        <div className="flex space-x-2 mb-2">
+                        <div className="flex space-x-2 mb-2 overflow-x-auto pb-1 no-scrollbar">
                             {navTabs.map((nav) => (
                                 <button
                                     key={nav}
-                                    className={`px-2 py-1 rounded text-xs border-1 border-bbg ${nav === selectedNav ? "bg-btnbg text-fg" : "text-fg"
+                                    className={`px-2 py-1 rounded text-xs border-1 border-bbg whitespace-nowrap ${nav === selectedNav ? "bg-btnbg text-fg" : "text-fg"
                                         }`}
                                     onClick={() => handleNavChange(nav)}
                                 >
@@ -439,16 +440,6 @@ function Setting({ setTrigger }) {
                                             </div>
                                         </div>
                                     </div>
-                                    {/* <div className='border rounded border-bbg p-2'>
-                                        <div className='flex justify-between items-center'>
-                                            <div className=''>
-                                                <h1 className='text-sm font-bold'>Layout</h1>
-                                                <p className='text-gray-500'>Choose your preferred layout</p>
-                                            </div>
-                                            <div className='border rounded border-bbg flex items-center'>
-                                            </div>
-                                        </div>
-                                    </div> */}
                                 </div>
                             ) : selectedNav == 'Blacklist' ? (
                                 <div className='flex flex-col space-y-2'>
@@ -533,25 +524,87 @@ function Setting({ setTrigger }) {
                                         </div>
                                     </div>
                                 </div>
-                            ) : (
-                                <div></div>
-                            )}
-                        </div>
-                        <AnimatePresence>
-                            {!saved &&
-                                <motion.div
-                                    initial={{ opacity: 0, y: '100%' }}
-                                    animate={{ opacity: 100, y: '0%' }}
-                                    exit={{ opacity: 0, y: '100%' }}
-                                    className={`${shake ? 'animate-shake' : ''} absolute bottom-0 z-50 p-2 mx-auto space-x-4 bg-bg text-xs flex justify-between items-center rounded-t-md border border-b-0 border-bbg`}>
-                                    <div>Unsaved changes</div>
-                                    <div className='flex space-x-2 '>
-                                        <button onClick={handleDiscardChanges} className='border rounded border-bbg py-1 px-2'>Discard</button>
-                                        <button onClick={handleChangesSaved} disabled={error !== ''} className='border rounded bg-btnbg text-fg py-1 px-2 disabled:opacity-50'>Save</button>
+                            ) : selectedNav == 'Profile' ? (
+                                <div className='flex flex-col space-y-4 p-2'>
+                                    <div className='border border-bbg rounded p-4 flex flex-col items-center space-y-3'>
+                                        <div className='h-16 w-16 rounded-full bg-logo/10 flex items-center justify-center text-logo'>
+                                            <UserRound size={32} />
+                                        </div>
+                                        <div className='text-center'>
+                                            <h1 className='text-sm font-bold capitalize'>{userPlan} Member</h1>
+                                            <p className='text-gray-500 text-[10px]'>Account managed via FreeCustom.Email</p>
+                                        </div>
+                                        <div className='flex flex-col w-full gap-2'>
+                                            <button 
+                                                onClick={() => window.open("https://www.freecustom.email/dashboard/profile", "_blank")}
+                                                className='bg-btnbg hover:bg-bbg text-fg px-4 py-2 rounded-md transition-colors w-full flex items-center justify-center gap-2'
+                                            >
+                                                View Web Profile <ArrowRight size={14} />
+                                            </button>
+                                            <button 
+                                                onClick={() => window.open("https://www.freecustom.email/dashboard", "_blank")}
+                                                className='border border-bbg hover:bg-bbg text-fg px-4 py-2 rounded-md transition-colors w-full flex items-center justify-center gap-2'
+                                            >
+                                                Manage Custom Domains
+                                            </button>
+                                        </div>
                                     </div>
+                                    {userPlan !== 'pro' && (
+                                        <div className='bg-logo/10 border border-logo/20 rounded p-3 text-center'>
+                                            <p className='text-[10px] text-logo font-bold mb-2'>UPGRADE TO PRO</p>
+                                            <p className='text-gray-500 mb-3'>Unlock custom domains, permanent storage, and more.</p>
+                                            <button 
+                                                onClick={() => window.open("https://www.freecustom.email/pricing", "_blank")}
+                                                className='bg-logo text-white text-[10px] font-bold px-3 py-1.5 rounded uppercase tracking-wider'
+                                            >
+                                                Start 3-Day Free Trial
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            ) : selectedNav == 'API' ? (
+                                <div className='flex flex-col space-y-4 p-2'>
+                                    <div className='border border-bbg rounded p-4 space-y-3'>
+                                        <div className='flex items-center gap-2 mb-2'>
+                                            <Zap size={18} className='text-logo' />
+                                            <h1 className='text-sm font-bold'>Developer API</h1>
+                                        </div>
+                                        <p className='text-gray-500'>Integrate disposable emails into your own testing workflows and automated scripts.</p>
+                                        <div className='space-y-2'>
+                                            <button 
+                                                onClick={() => window.open("https://www.freecustom.email/api/docs", "_blank")}
+                                                className='bg-btnbg hover:bg-bbg text-fg px-4 py-2 rounded-md transition-colors w-full flex items-center justify-center gap-2'
+                                            >
+                                                API Documentation <ArrowRight size={14} />
+                                            </button>
+                                            <button 
+                                                onClick={() => window.open("https://www.freecustom.email/api", "_blank")}
+                                                className='border border-bbg hover:bg-bbg text-fg px-4 py-2 rounded-md transition-colors w-full flex items-center justify-center gap-2'
+                                            >
+                                                Manage API Keys
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : null}
+                        </div>
+
+                        {
+                            (selectedNav !== 'Profile' && selectedNav !== 'API' && !saved) && (
+                                <motion.div
+                                    animate={shake ? { x: [-5, 5, -5, 5, 0] } : {}}
+                                    className="p-2 border-t border-bbg flex justify-end space-x-2 bg-bg absolute bottom-0 right-0 w-full"
+                                >
+                                    <button onClick={handleDiscardChanges} className="px-3 py-1 rounded text-xs text-gray-400">
+                                        Discard
+                                    </button>
+                                    <button onClick={handleChangesSaved} className="px-3 py-1 rounded text-xs bg-btnbg text-fg">
+                                        Save Changes
+                                    </button>
                                 </motion.div>
-                            }
-                        </AnimatePresence>
+                            )
+                        }
+
                     </div>
                 </motion.div>
             )}

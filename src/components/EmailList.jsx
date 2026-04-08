@@ -9,7 +9,7 @@ if (typeof browser === "undefined") {
   /* global chrome */
   var browser = chrome;
 }
-const EmailList = forwardRef(({ mailbox, onSelectEmail, setLoading }, ref) => {
+const EmailList = forwardRef(({ mailbox, onSelectEmail, setLoading, userPlan = 'anonymous' }, ref) => {
   const [emails, setEmails] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -43,15 +43,13 @@ const EmailList = forwardRef(({ mailbox, onSelectEmail, setLoading }, ref) => {
   };
 
   const refreshCounts = async () => {
-    await browser.storage.local.get('emailCounts', (res) => {
-
-      let emailCounts = res?.emailCounts;
-      emailCounts = emailCounts[mailbox]
-
-      if (Object.keys(res).length !== 0) {
-        setEmailCounts(emailCounts)
-      }
-    })
+    if (typeof browser !== 'undefined' && browser.storage) {
+      browser.storage.local.get('emailCounts', (res) => {
+        let counts = res?.emailCounts || {};
+        let addressCounts = counts[mailbox] || { Inbox: 0, Unread: 0, Starred: 0, Spam: 0, Trash: 0 };
+        setEmailCounts(addressCounts);
+      });
+    }
   };
 
   useEffect(() => {
@@ -130,7 +128,9 @@ const EmailList = forwardRef(({ mailbox, onSelectEmail, setLoading }, ref) => {
   const startIndex = (currentPage - 1) * perPage;
   const currentEmails = emails.slice(startIndex, startIndex + perPage);
 
-  const Folders = ["Inbox", "Unread", "Starred", "Spam", "Trash"];
+  const baseFolders = ["Inbox", "Unread"];
+  const proFolders = ["Starred", "Spam", "Trash"];
+  const Folders = userPlan === 'pro' ? [...baseFolders, ...proFolders] : baseFolders;
 
   const handleFolderChange = async (mailbox, emailId, folder) => {
     const res = await moveToFolder(mailbox, emailId, folder)
@@ -141,6 +141,18 @@ const EmailList = forwardRef(({ mailbox, onSelectEmail, setLoading }, ref) => {
     }
   }
 
+  const handleFolderClick = (Folder) => {
+    const isProFeature = ["Starred", "Spam", "Trash"].includes(Folder);
+    if (isProFeature && userPlan !== 'pro') {
+      // Accessing window/parent state to open upsell would be better, 
+      // but for now let's just use a simple alert or redirect
+      window.open("https://www.freecustom.email/pricing?source=extension_folders", "_blank");
+      return;
+    }
+    setSelectedFolder(Folder);
+    loadEmailsForMailbox(mailbox, Folder);
+  };
+
   return (
     <div className="email-list mt-4">
       <div className="flex justify-between items-center mb-2">
@@ -150,10 +162,7 @@ const EmailList = forwardRef(({ mailbox, onSelectEmail, setLoading }, ref) => {
               key={Folder}
               className={`px-1 py-0.5 rounded text-xs  ${Folder === selectedFolder ? "bg-btnbg text-fg" : "text-fg"
                 }`}
-              onClick={() => {
-                setSelectedFolder(Folder);
-                loadEmailsForMailbox(mailbox, Folder);
-              }}
+              onClick={() => handleFolderClick(Folder)}
             >
               {Folder}
               <span className={`${selectedFolder == Folder ? 'text-fg' : 'text-btnbg'} font-bold ml-1 `}>

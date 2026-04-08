@@ -4,10 +4,35 @@ importScripts("libs/webextension-polyfill.js");
 const API_BASE = "https://api2.freecustom.email";
 const WS_BASE = "wss://api2.freecustom.email";
 
+// Helper to get fingerprint (service worker compatible)
+function getExtensionFingerprint() {
+    // Create a simple fingerprint in service worker context
+    // Service workers don't have navigator/window, but browser.runtime can give us info
+    const fingerprint = [
+        self.navigator?.userAgent || 'extension',
+        self.navigator?.language || 'en',
+        new Date().getTimezoneOffset(),
+        Date.now()
+    ].join('|');
+    
+    // Simple hash function
+    let hash = 0;
+    for (let i = 0; i < fingerprint.length; i++) {
+        const char = fingerprint.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+    }
+    return Math.abs(hash).toString(16);
+}
+
 // Helper to get headers
 async function getAuthHeaders() {
     const { extToken } = await browser.storage.local.get("extToken");
-    const headers = { "Content-Type": "application/json", "x-fce-client": "extension" };
+    const headers = { 
+        "Content-Type": "application/json", 
+        "x-fce-client": "extension",
+        "x-fingerprint": getExtensionFingerprint()
+    };
     if (extToken) {
         headers["Authorization"] = `Bearer ${extToken}`;
     }
@@ -48,12 +73,27 @@ async function processQueue() {
 // Websocket Management
 let socket = null;
 let reconnectTimer = null;
+let isConnecting = false;
+let currentMailbox = null;
 
-async function initWebSocket() {
-    if (socket) socket.close();
-
+async function initWebSocket(force = false) {
+    if (isConnecting) return; // Prevent multiple concurrent connections
+    
     const { extToken, tempEmail } = await browser.storage.local.get(["extToken", "tempEmail"]);
     if (!tempEmail) return;
+
+    // If we already have a connection to this mailbox, don't reconnect unless forced
+    if (!force && socket && socket.readyState === WebSocket.OPEN && currentMailbox === tempEmail) {
+        return;
+    }
+    
+    if (socket) {
+        socket.close();
+        socket = null;
+    }
+    
+    isConnecting = true;
+    currentMailbox = tempEmail;
 
     let wsUrl = `${WS_BASE}/?mailbox=${encodeURIComponent(tempEmail)}`;
     
@@ -71,15 +111,11 @@ async function initWebSocket() {
         console.error("Failed to fetch WS ticket", e);
     }
 
-    if (extToken) {
-        // We can also connect to the v1/ws using api_key if the backend supports it, but standard WS is safer based on token
-        // wsUrl = `${WS_BASE}/v1/ws?api_key=${encodeURIComponent(extToken)}`;
-    }
-
     socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
         console.log("WebSocket connected to", wsUrl);
+        isConnecting = false;
     };
 
     socket.onmessage = async (event) => {
@@ -94,12 +130,19 @@ async function initWebSocket() {
     };
 
     socket.onclose = () => {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = setTimeout(initWebSocket, 5000);
+        isConnecting = false;
+        // Only reconnect if we still have a tempEmail
+        browser.storage.local.get("tempEmail").then(res => {
+            if (res.tempEmail) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = setTimeout(() => initWebSocket(true), 5000);
+            }
+        });
     };
     
     socket.onerror = (err) => {
         console.error("WebSocket error:", err);
+        isConnecting = false;
     };
 }
 
@@ -107,7 +150,7 @@ async function initWebSocket() {
 async function handleNewMail(data) {
     const headers = await getAuthHeaders();
     try {
-        const res = await fetch(`${API_BASE}/mailbox/${data.mailbox}/message/${data.id}`, { headers });
+        const res = await fetch(`${API_BASE}/v1/ext/mailbox/${data.mailbox}/message/${data.id}`, { headers });
         if (!res.ok) return;
         
         const result = await res.json();
@@ -131,6 +174,9 @@ async function handleNewMail(data) {
             return currentSavedMessages;
         };
         await updateSavedMessages(changeFn);
+        
+        // Send to popup with folder property
+        browser.runtime.sendMessage({ type: "NEW_MESSAGE", data: newMsg }).catch(() => {});
         
         browser.notifications.create({
             type: "basic",
@@ -243,7 +289,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
             try {
                 if (!message.address) throw new Error("No address provided");
                 const headers = await getAuthHeaders();
-                const res = await fetch(`${API_BASE}/mailbox/${message.address}`, { headers, method: "GET" });
+                const res = await fetch(`${API_BASE}/v1/ext/mailbox/${message.address}`, { headers, method: "GET" });
                 
                 if (!res.ok) throw new Error(`API Error: ${res.status}`);
                 
@@ -295,7 +341,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
                 
                 const headers = await getAuthHeaders();
-                const res = await fetch(`${API_BASE}/mailbox/${message.address}/message/${message.id}`, { headers, method: 'GET' });
+                const res = await fetch(`${API_BASE}/v1/ext/mailbox/${message.address}/message/${message.id}`, { headers, method: 'GET' });
                 if (!res.ok) throw new Error(`API Error: ${res.status}`);
                 
                 const apiResponse = await res.json();
@@ -329,7 +375,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
             try {
                 if (!message.address || !message.id) throw new Error("Missing params");
                 const headers = await getAuthHeaders();
-                const res = await fetch(`${API_BASE}/mailbox/${message.address}/message/${message.id}`, { headers, method: "DELETE" });
+                const res = await fetch(`${API_BASE}/v1/ext/mailbox/${message.address}/message/${message.id}`, { headers, method: "DELETE" });
                 if (!res.ok) throw new Error(`API Error: ${res.status}`);
                 
                 const { savedMessages = {} } = await browser.storage.local.get("savedMessages");
@@ -404,10 +450,46 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === "UPDATE_ACTIVE_MAILBOX") {
-        browser.storage.local.set({ tempEmail: message.email }).then(() => {
-            initWebSocket();
-            sendResponse({ success: true });
-        });
+        (async () => {
+            const { extToken } = await browser.storage.local.get("extToken");
+            const newEmail = message.email;
+            
+            // If user is logged in, sync with backend inboxes
+            if (extToken && newEmail) {
+                const headers = await getAuthHeaders();
+                try {
+                    // First, fetch existing inboxes
+                    const inboxesRes = await fetch(`${API_BASE}/v1/ext/inboxes`, { headers });
+                    if (inboxesRes.ok) {
+                        const inboxesData = await inboxesRes.json();
+                        const userInboxes = inboxesData.data || [];
+                        
+                        // Check if this inbox already exists
+                        const inboxExists = userInboxes.some(ib => 
+                            (typeof ib === 'string' ? ib === newEmail : (ib.inboxName === newEmail || ib.email === newEmail))
+                        );
+                        
+                        if (!inboxExists) {
+                            // Register the new inbox
+                            await fetch(`${API_BASE}/v1/ext/register-inbox`, {
+                                method: "POST",
+                                headers,
+                                body: JSON.stringify({ inboxName: newEmail })
+                            });
+                            console.log("Inbox registered:", newEmail);
+                        }
+                    }
+                } catch (e) {
+                    console.error("Failed to sync inbox with backend", e);
+                }
+            }
+            
+            currentMailbox = newEmail;
+            browser.storage.local.set({ tempEmail: newEmail }).then(() => {
+                initWebSocket(true);
+                sendResponse({ success: true });
+            });
+        })();
         return true;
     }
     
@@ -470,7 +552,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
             const rndDomain = domainsList[Math.floor(Math.random() * domainsList.length)];
             const tempEmail = result + '@' + rndDomain;
             await browser.storage.local.set({ tempEmail });
-            initWebSocket();
+            initWebSocket(true);
             sendResponse({ tempEmail });
         })();
         return true;
@@ -486,9 +568,34 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     
     if (message.type === "EMAIL_HISTORY") {
-        browser.storage.local.get("emailHistory").then(res => {
-            sendResponse({ success: true, data: res.emailHistory || [] });
-        });
+        (async () => {
+            const { extToken } = await browser.storage.local.get("extToken");
+            if (extToken) {
+                // If Pro, fetch from backend
+                try {
+                    const payload = JSON.parse(atob(extToken.split('.')[1]));
+                    if (payload.plan === 'pro') {
+                        const headers = await getAuthHeaders();
+                        const meRes = await fetch(`${API_BASE}/v1/me`, { headers });
+                        if (meRes.ok) {
+                            const meData = await meRes.json();
+                            const user = meData.data;
+                            if (user && user.inboxes) {
+                                sendResponse({ success: true, data: user.inboxes });
+                                return;
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error("Failed to fetch history from backend", e);
+                }
+            }
+            
+            // Fallback to local history
+            browser.storage.local.get("emailHistory").then(res => {
+                sendResponse({ success: true, data: res.emailHistory || [] });
+            });
+        })();
         return true;
     }
     
@@ -511,8 +618,28 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 });
 
-browser.storage.local.get(["tempEmail", "extToken"]).then((res) => {
-    if (res.tempEmail) {
+browser.storage.local.get(["tempEmail", "extToken"]).then(async (res) => {
+    if (res.extToken) {
+        // If logged in, fetch profile to get latest inboxes
+        try {
+            const headers = await getAuthHeaders();
+            const meRes = await fetch(`${API_BASE}/v1/me`, { headers });
+            if (meRes.ok) {
+                const meData = await meRes.json();
+                const user = meData.data;
+                if (user && user.inboxes && user.inboxes.length > 0) {
+                    const lastUsed = user.inboxes[0];
+                    await browser.storage.local.set({ tempEmail: lastUsed });
+                    currentMailbox = lastUsed;
+                }
+            }
+        } catch (e) {
+            console.error("Failed to fetch profile on init", e);
+        }
+    }
+    
+    const data = await browser.storage.local.get("tempEmail");
+    if (data.tempEmail) {
         initWebSocket();
     }
 });

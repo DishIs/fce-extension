@@ -8,7 +8,7 @@ if (typeof browser === "undefined") {
   var browser = chrome;
 }
 
-const Header = ({ setTrigger, mailbox, onSelectEmail }) => {
+const Header = ({ setTrigger, mailbox, onSelectEmail, userPlan = 'anonymous' }) => {
   const [extToken, setExtToken] = useState(null);
 
   useEffect(() => {
@@ -33,10 +33,10 @@ const Header = ({ setTrigger, mailbox, onSelectEmail }) => {
           {!extToken ? (
              <button onClick={handleLogin} className="text-xs bg-logo text-white px-2 py-1 rounded">Login</button>
           ) : (
-             <span className="text-xs text-green-500 font-bold px-1" title="Connected">Pro</span>
+             <span className="text-xs text-green-500 font-bold px-1" title="Connected">{userPlan === 'pro' ? 'PRO' : 'Free'}</span>
           )}
           <Search onSelectEmail={onSelectEmail} mailbox={mailbox} />
-          <Setting setTrigger={setTrigger} />
+          <Setting setTrigger={setTrigger} userPlan={userPlan} />
         </div>
       </div>
     </header>
